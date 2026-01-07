@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/vision.dir/Operaciones.cpp.o CMakeFiles/vision.dir/Principal.cpp.o -o vision 

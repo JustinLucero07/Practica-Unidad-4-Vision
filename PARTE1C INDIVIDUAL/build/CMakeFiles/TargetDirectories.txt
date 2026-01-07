@@ -1,0 +1,3 @@
+/home/vlarobbyk/Descargas/Ejemplos-de-Código-Visión-Artificial-PG7/Ejemplo-0-Hola-Mundo-C++/build/CMakeFiles/vision.dir
+/home/vlarobbyk/Descargas/Ejemplos-de-Código-Visión-Artificial-PG7/Ejemplo-0-Hola-Mundo-C++/build/CMakeFiles/edit_cache.dir
+/home/vlarobbyk/Descargas/Ejemplos-de-Código-Visión-Artificial-PG7/Ejemplo-0-Hola-Mundo-C++/build/CMakeFiles/rebuild_cache.dir
