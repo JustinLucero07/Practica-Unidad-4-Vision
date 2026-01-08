@@ -1,14 +1,16 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/dnn.hpp>
-#include <opencv2/dnn_superres.hpp>
 #include <fstream>
 #include <iostream>
 #include <vector>
 
 using namespace cv;
 using namespace cv::dnn;
-using namespace cv::dnn_superres;
 using namespace std;
+
+/* ===================== CONFIGURACIÓN GPU/CPU ===================== */
+const bool USE_GPU_YOLO = false;   // true = GPU, false = CPU
+const bool USE_GPU_SR = false;     // true = GPU, false = CPU
 
 /* ===================== CONSTANTES ===================== */
 const float INPUT_WIDTH = 640.0;
@@ -44,25 +46,63 @@ Mat format_yolo(Mat source) {
     return result;
 }
 
+/* ===================== CONFIGURAR BACKEND ===================== */
+void configure_backend(Net& net, bool use_gpu, const string& name) {
+    if (use_gpu) {
+        cout << "[" << name << "] Intentando usar GPU (CUDA)..." << endl;
+        try {
+            net.setPreferableBackend(DNN_BACKEND_CUDA);
+            net.setPreferableTarget(DNN_TARGET_CUDA_FP16);
+            cout << "[" << name << "] GPU activada correctamente" << endl;
+        } catch (const exception& e) {
+            cout << "[" << name << "] GPU no disponible, usando CPU" << endl;
+            net.setPreferableBackend(DNN_BACKEND_OPENCV);
+            net.setPreferableTarget(DNN_TARGET_CPU);
+        }
+    } else {
+        cout << "[" << name << "] Usando CPU" << endl;
+        net.setPreferableBackend(DNN_BACKEND_OPENCV);
+        net.setPreferableTarget(DNN_TARGET_CPU);
+    }
+}
+
 int main() {
+
+    cout << "========================================" << endl;
+    cout << "   CONFIGURACION DE PROCESAMIENTO" << endl;
+    cout << "========================================" << endl;
+    cout << "YOLO GPU: " << (USE_GPU_YOLO ? "ACTIVADA" : "DESACTIVADA") << endl;
+    cout << "SR GPU:   " << (USE_GPU_SR ? "ACTIVADA" : "DESACTIVADA") << endl;
+    cout << "========================================" << endl;
 
     vector<string> class_list = load_class_list();
 
     /* ===================== YOLO ===================== */
     Net net = readNet("yolo12n.onnx");
+    configure_backend(net, USE_GPU_YOLO, "YOLO");
 
-    // ===== GPU =====
-    net.setPreferableBackend(DNN_BACKEND_CUDA);
-    net.setPreferableTarget(DNN_TARGET_CUDA_FP16);
-
-    // ===== CPU =====
-    //net.setPreferableBackend(DNN_BACKEND_OPENCV);
-    //net.setPreferableTarget(DNN_TARGET_CPU);
-
-    /* ===================== SUPER RES ===================== */
-    DnnSuperResImpl sr;
-    sr.readModel("ESPCN_x4.pb");
-    sr.setModel("espcn", 4);
+    /* ===================== Real-ESRGAN x4 (ONNX) ===================== */
+    Net sr_net;
+    bool sr_available = false;
+    
+    try {
+        // Verificar si el archivo existe
+        ifstream sr_file("RealESRGAN_x4plus.fp16.onnx");
+        if (!sr_file.good()) {
+            cout << "[SR] WARNING: Archivo RealESR-AnimeVideo-v3_x4.onnx no encontrado" << endl;
+            cout << "[SR] Descargalo desde tu fuente o usa otro modelo ONNX" << endl;
+            cout << "[SR] Continuando sin Super Resolution..." << endl;
+        } else {
+            sr_net = readNet("RealESR-AnimeVideo-v3_x4.onnx");
+            configure_backend(sr_net, USE_GPU_SR, "Real-ESRGAN");
+            sr_available = true;
+            cout << "[SR] Real-ESRGAN cargada correctamente" << endl;
+        }
+    } catch (const exception& e) {
+        cout << "[SR] Error cargando Real-ESRGAN: " << e.what() << endl;
+        cout << "[SR] Continuando sin Super Resolution..." << endl;
+        sr_available = false;
+    }
 
     VideoCapture cap("Moscow.mp4");
     if (!cap.isOpened()) {
@@ -70,18 +110,34 @@ int main() {
         return -1;
     }
 
+    // Mostrar info del video
+    int video_width = cap.get(CAP_PROP_FRAME_WIDTH);
+    int video_height = cap.get(CAP_PROP_FRAME_HEIGHT);
+    double video_fps = cap.get(CAP_PROP_FPS);
+    
+    cout << "========================================" << endl;
+    cout << "Video: " << video_width << "x" << video_height << " @ " << video_fps << " FPS" << endl;
+    cout << "========================================" << endl;
+
     namedWindow("YOLOv12", WINDOW_AUTOSIZE);
-    namedWindow("Super Resolucion x4", WINDOW_AUTOSIZE);
+    if (sr_available) {
+        namedWindow("Real-ESRGAN x4", WINDOW_AUTOSIZE);
+    }
 
     Mat frame, sr_frame;
     vector<Mat> outputs;
+    vector<Mat> sr_outputs;
 
     double fps_yolo = 0.0;
     double fps_sr = 0.0;
+    
+    int frame_count = 0;
 
     while (true) {
         cap >> frame;
         if (frame.empty()) break;
+        
+        frame_count++;
 
         /* ================= YOLO ================= */
         double t0 = getTickCount();
@@ -140,23 +196,88 @@ int main() {
 
         fps_yolo = getTickFrequency() / (getTickCount() - t0);
 
-        /* ================= SUPER RES ================= */
-        double t1 = getTickCount();
-        sr.upsample(frame, sr_frame);
-        resize(sr_frame, sr_frame, frame.size());
-        fps_sr = getTickFrequency() / (getTickCount() - t1);
+        /* ================= Real-ESRGAN x4 (ONNX) ================= */
+        if (sr_available) {
+            double t1 = getTickCount();
+            
+            try {
+                // Convertir BGR a RGB
+                Mat frame_rgb;
+                cvtColor(frame, frame_rgb, COLOR_BGR2RGB);
+                
+                // Convertir a float32 y normalizar [0, 1]
+                Mat frame_float;
+                frame_rgb.convertTo(frame_float, CV_32FC3, 1.0/255.0);
+                
+                // Crear blob con formato NCHW (1, 3, H, W)
+                Mat sr_blob = blobFromImage(frame_float, 1.0, frame.size(), 
+                                             Scalar(), false, false);
+                
+                sr_net.setInput(sr_blob);
+                sr_net.forward(sr_outputs, sr_net.getUnconnectedOutLayersNames());
+                
+                // Obtener salida
+                Mat sr_output = sr_outputs[0];
+                
+                // Convertir de NCHW (1, 3, H, W) a HWC
+                vector<Mat> channels(3);
+                int h = sr_output.size[2];
+                int w = sr_output.size[3];
+                
+                for (int c = 0; c < 3; c++) {
+                    channels[c] = Mat(h, w, CV_32F, sr_output.ptr<float>(0, c));
+                }
+                
+                merge(channels, sr_frame);
+                
+                // Desnormalizar y convertir a uint8
+                sr_frame.convertTo(sr_frame, CV_8UC3, 255.0);
+                
+                // Convertir RGB de vuelta a BGR para mostrar
+                cvtColor(sr_frame, sr_frame, COLOR_RGB2BGR);
+                
+                // Real-ESRGAN x4 produce 4x el tamaño, redimensionar al original
+                resize(sr_frame, sr_frame, frame.size());
+                
+                fps_sr = getTickFrequency() / (getTickCount() - t1);
+            } catch (const exception& e) {
+                cout << "[SR] Error procesando frame: " << e.what() << endl;
+                sr_frame = frame.clone();
+                fps_sr = 0;
+            }
+        }
 
-        putText(yolo_view, "FPS YOLO: " + to_string((int)fps_yolo),
-                Point(20,40), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255), 2);
+        // Mostrar backend usado
+        string yolo_backend = USE_GPU_YOLO ? "GPU" : "CPU";
+        string sr_backend = USE_GPU_SR ? "GPU" : "CPU";
 
-        putText(sr_frame, "FPS SR: " + to_string((int)fps_sr),
-                Point(20,40), FONT_HERSHEY_SIMPLEX, 1, Scalar(255,0,0), 2);
+        putText(yolo_view, "YOLO (" + yolo_backend + "): " + to_string((int)fps_yolo) + " FPS",
+                Point(20,40), FONT_HERSHEY_SIMPLEX, 0.8, Scalar(0,0,255), 2);
 
         imshow("YOLOv12", yolo_view);
-        imshow("Super Resolucion x4", sr_frame);
+        
+        if (sr_available) {
+            putText(sr_frame, "Real-ESRGAN (" + sr_backend + "): " + to_string((int)fps_sr) + " FPS",
+                    Point(20,40), FONT_HERSHEY_SIMPLEX, 0.8, Scalar(255,0,0), 2);
+            imshow("Real-ESRGAN x4", sr_frame);
+        }
+        
+        // Mostrar progreso cada 30 frames
+        if (frame_count % 30 == 0) {
+            cout << "Frame " << frame_count 
+                 << " | YOLO: " << (int)fps_yolo << " FPS";
+            if (sr_available) {
+                cout << " | SR: " << (int)fps_sr << " FPS";
+            }
+            cout << endl;
+        }
 
         if (waitKey(1) == 27) break;
     }
+
+    cout << "========================================" << endl;
+    cout << "Procesamiento completado: " << frame_count << " frames" << endl;
+    cout << "========================================" << endl;
 
     cap.release();
     destroyAllWindows();
