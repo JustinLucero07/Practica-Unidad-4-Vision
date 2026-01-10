@@ -1,5 +1,5 @@
 yolo:
-	g++ YOLO.cpp -std=c++17 \
+	g++ Pipelines.cpp -std=c++17 \
 	-I/home/justin/Documentos/opencv/opencvi/include/opencv4 \
 	-L/home/justin/Documentos/opencv/opencvi/lib \
 	-lopencv_core \

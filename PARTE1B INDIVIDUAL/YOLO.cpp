@@ -50,8 +50,8 @@ int main(int argc, char **argv) {
     Net net = readNet("yolo12n.onnx");
     
     // Activamos la ejecución del modelo en CUDA
-    //net.setPreferableBackend(DNN_BACKEND_CUDA);
-    //net.setPreferableTarget(DNN_TARGET_CUDA_FP16);
+    net.setPreferableBackend(DNN_BACKEND_CUDA);
+    net.setPreferableTarget(DNN_TARGET_CUDA_FP16);
 
     // 2. Definimos la fuente desde donde se cargará el vídeo
 
